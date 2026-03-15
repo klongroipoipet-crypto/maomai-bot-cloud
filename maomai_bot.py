@@ -19,12 +19,11 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Maomai Bot is Living!")
 
 def run_health_server():
-    # Render จะส่ง Port มาให้ผ่าน Environment Variable
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
-# --- BOT LOGIC (V.10 เดิมที่คุณหมิงชอบ) ---
+# --- CORE LOGIC ---
 def maomai_clean_sweep_v10(image):
     h, w = image.shape[:2]
     wm_h, wm_w = int(h * 0.028), int(w * 0.14) 
@@ -44,21 +43,54 @@ def maomai_clean_sweep_v10(image):
         roi[:, :, c] = (roi[:, :, c] * (1 - mask) + overlay_box[:, :, c] * mask).astype(np.uint8)
     return image
 
-# ... (ส่วน handle_photo, handle_video, video_worker เหมือนเดิม) ...
-# (เพื่อความกระชับ ผมละไว้ แต่ในไฟล์จริงคุณหมิงใส่ให้ครบนะครับ)
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photo = await update.message.photo[-1].get_file()
+    path = f"{photo.file_id}.jpg"
+    await photo.download_to_drive(path)
+    img = cv2.imread(path)
+    if img is not None:
+        processed = maomai_clean_sweep_v10(img)
+        out_path = f"clean_{path}"
+        cv2.imwrite(out_path, processed)
+        await update.message.reply_photo(photo=open(out_path, 'rb'))
+        os.remove(path)
+        os.remove(out_path)
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("วิดีโอกำลังเข้าคิวประมวลผล... (อาจใช้เวลาสักครู่)")
+    video = await update.message.video.get_file()
+    path = f"{video.file_id}.mp4"
+    await video.download_to_drive(path)
+    await task_queue.put((path, update.message.chat_id))
+
+async def video_worker():
+    while True:
+        path, chat_id: (str, int) = await task_queue.get()
+        cap = cv2.VideoCapture(path)
+        out_path = f"clean_{path}"
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(out_path, fourcc, cap.get(cv2.CAP_PROP_FPS),
+                              (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret: break
+            out.write(maomai_clean_sweep_v10(frame))
+        cap.release()
+        out.release()
+        # Note: Sending video from Render Free might be slow
+        print(f"Finished video {path}")
+        task_queue.task_done()
 
 async def post_init(application: Application):
     asyncio.create_task(video_worker())
 
 def main():
-    # รัน Web Server แยก Thread เพื่อกัน Render ตัดการทำงาน
     threading.Thread(target=run_health_server, daemon=True).start()
-    
     app = Application.builder().token(TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("บอทเมามายบน Cloud พร้อม!")))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("บอทเมามายบน Cloud พร้อมลุย 24 ชม.!")))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    print("--- Maomai Bot: Cloud Version Live ---")
+    print("--- Maomai Bot: Cloud Ready ---")
     app.run_polling()
 
 if __name__ == "__main__":
