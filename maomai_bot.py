@@ -44,6 +44,7 @@ def maomai_clean_sweep_v10(image):
     return image
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.photo: return
     photo = await update.message.photo[-1].get_file()
     path = f"{photo.file_id}.jpg"
     await photo.download_to_drive(path)
@@ -53,10 +54,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         out_path = f"clean_{path}"
         cv2.imwrite(out_path, processed)
         await update.message.reply_photo(photo=open(out_path, 'rb'))
-        os.remove(path)
-        os.remove(out_path)
+        if os.path.exists(path): os.remove(path)
+        if os.path.exists(out_path): os.remove(out_path)
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.video: return
     await update.message.reply_text("วิดีโอกำลังเข้าคิวประมวลผล... (อาจใช้เวลาสักครู่)")
     video = await update.message.video.get_file()
     path = f"{video.file_id}.mp4"
@@ -65,21 +67,29 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def video_worker():
     while True:
-        path, chat_id: (str, int) = await task_queue.get()
+        # แก้ไขจุดที่ทำให้เกิด SyntaxError ใน Render
+        data = await task_queue.get()
+        path, chat_id = data
+        
         cap = cv2.VideoCapture(path)
         out_path = f"clean_{path}"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(out_path, fourcc, cap.get(cv2.CAP_PROP_FPS),
-                              (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
             out.write(maomai_clean_sweep_v10(frame))
+        
         cap.release()
         out.release()
-        # Note: Sending video from Render Free might be slow
-        print(f"Finished video {path}")
+        # หมายเหตุ: การส่งวิดีโอกลับบน Render ตัวฟรีอาจจะช้าหรือติดปัญหา Timeout ได้
+        print(f"Finished processing video: {path}")
         task_queue.task_done()
+        if os.path.exists(path): os.remove(path)
 
 async def post_init(application: Application):
     asyncio.create_task(video_worker())
@@ -90,7 +100,7 @@ def main():
     app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("บอทเมามายบน Cloud พร้อมลุย 24 ชม.!")))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    print("--- Maomai Bot: Cloud Ready ---")
+    print("--- Maomai Bot: Cloud Ready (V.11 Stable) ---")
     app.run_polling()
 
 if __name__ == "__main__":
